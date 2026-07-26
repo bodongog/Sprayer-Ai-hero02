@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Smart Sprayer Monitor</title>
+    <!-- Menggunakan Tailwind CSS untuk tampilan dashboard yang rapi -->
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .warning-bg { animation: pulseBg 1s infinite; }
+        @keyframes pulseBg {
+            0% { background-color: rgba(220, 38, 38, 0.2); }
+            50% { background-color: rgba(220, 38, 38, 0.5); }
+            100% { background-color: rgba(220, 38, 38, 0.2); }
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-white min-h-screen flex flex-col items-center p-4">
+
+    <!-- HEADER DASHBOARD -->
+    <header class="w-full max-w-md text-center my-4">
+        <h1 class="text-xl font-bold tracking-wide text-emerald-400">AI SMART SPRAYER</h1>
+        <p class="text-xs text-slate-400">Sistem Deteksi Gulma & Monitor Debit Real-Time</p>
+    </header>
+
+    <!-- MONITOR PEMBACA AI (MONITOR UTAMA) -->
+    <main class="w-full max-w-md bg-slate-800 rounded-2xl shadow-xl border border-slate-700 overflow-hidden mb-4">
+        
+        <!-- Indikator Status Sistem -->
+        <div id="status-panel" class="bg-slate-950 p-4 border-b border-slate-700 text-center transition-all duration-300">
+            <span class="text-xs uppercase tracking-widest text-slate-400 block mb-1">Status Sistem</span>
+            <div id="status-label" class="text-lg font-extrabold text-amber-400">Memuat Sistem...</div>
+        </div>
+
+        <!-- Kamera Container -->
+        <div class="relative bg-black flex justify-center items-center aspect-square w-full" id="webcam-container">
+            <!-- Overlay tombol start awal -->
+            <div id="start-overlay" class="absolute inset-0 bg-slate-900/90 flex flex-col justify-center items-center z-10 transition-opacity duration-500 p-6 text-center">
+                <p class="text-sm text-slate-300 mb-4">Pastikan Wemos aktif dan satu jaringan Wi-Fi.</p>
+                <button onclick="mulaiSistem()" class="bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold px-6 py-3 rounded-xl shadow-lg transform active:scale-95 transition-all text-sm tracking-wide">
+                    AKTIFKAN KAMERA AI
+                </button>
+            </div>
+        </div>
+
+        <!-- PANEL DATA / HASIL UKUR DEBIT -->
+        <div class="p-4 grid grid-cols-2 gap-3 bg-slate-900/50 text-center">
+            <div class="bg-slate-800/80 p-3 rounded-xl border border-slate-700">
+                <span class="text-[10px] uppercase text-slate-400 block mb-1">Semprotan Terakhir</span>
+                <div id="monitor-durasi" class="text-lg font-bold text-sky-400">0.00 <span class="text-xs font-normal text-slate-400">detik</span></div>
+            </div>
+            <div class="bg-slate-800/80 p-3 rounded-xl border border-slate-700">
+                <span class="text-[10px] uppercase text-slate-400 block mb-1">Volume Sesi Ini</span>
+                <div id="monitor-sesi" class="text-lg font-bold text-sky-400">0.0 <span class="text-xs font-normal text-slate-400">mL</span></div>
+            </div>
+            <div class="bg-slate-800/80 p-3 rounded-xl border border-slate-700 col-span-2 shadow-inner">
+                <span class="text-[10px] uppercase text-emerald-400 font-semibold block mb-1">TOTAL AKUMULASI PESTISIDA</span>
+                <div id="monitor-total" class="text-2xl font-black text-emerald-400">0 <span class="text-sm font-bold text-slate-300">mL</span></div>
+            </div>
+        </div>
+    </main>
+
+    <!-- FOOTER INFO KONEKSI -->
+    <footer class="w-full max-w-md bg-slate-950 rounded-xl p-3 border border-slate-800 text-center text-[11px] text-slate-500">
+        Target IP Wemos: <span class="text-slate-300 font-mono">10.140.152.41</span> | Jalur: <span class="text-amber-500 font-mono">Lokal (Chrome Flags)</span>
+    </footer>
+
+    <!-- LOGIKA AI DAN PERHITUNGAN DEBIT -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
+    
+    <script>
+        const URL = "https://teachablemachine.withgoogle.com/models/GYW1ROkS8/";
+        const IP_WEMOS = "10.140.152.41"; 
+
+        // === KALIBRASI DEBIT POMPA PRESIFI (Hasil ukur manual: 250ml / 15 detik = 16.67 ml/detik) ===
+        const DEBIT_PER_DETIK = 16.67; 
+
+        let model, webcam, maxPredictions;
+        let statusPompaSaatIni = "MATI"; 
+        
+        // Variabel Data Logger
+        let waktuMulaiSemprot = 0;
+        let totalPestisidaKeluar = 0; 
+
+        async function mulaiSistem() {
+            const overlay = document.getElementById("start-overlay");
+            overlay.style.opacity = "0";
+            setTimeout(() => overlay.style.display = "none", 500);
+
+            document.getElementById("status-label").innerText = "Memuat AI...";
+
+            try {
+                const modelURL = URL + "model.json";
+                const metadataURL = URL + "metadata.json";
+
+                model = await tmImage.load(modelURL, metadataURL);
+                maxPredictions = model.getTotalClasses();
+
+                const flip = false; 
+                webcam = new tmImage.Webcam(350, 350, flip); 
+                await webcam.setup({ facingMode: "environment" }); 
+                
+                await webcam.play();
+                window.requestAnimationFrame(loop);
+
+                // Memasukkan canvas ke dalam container monitor
+                const container = document.getElementById("webcam-container");
+                webcam.canvas.className = "w-full h-full object-cover rounded-b-none";
+                container.appendChild(webcam.canvas);
+                
+                document.getElementById("status-label").innerText = "MENGAWASI TANAMAN...";
+                document.getElementById("status-label").className = "text-lg font-extrabold text-emerald-400";
+
+            } catch (error) {
+                console.error(error);
+                document.getElementById("status-label").innerText = "AKSES KAMERA DITOLAK!";
+                document.getElementById("status-label").className = "text-lg font-extrabold text-red-500";
+            }
+        }
+
+        async function loop() {
+            if (webcam.canvas) {
+                webcam.update(); 
+                const ctx = webcam.canvas.getContext("2d");
+                if (webcam.video && webcam.video.readyState === webcam.video.HAVE_ENOUGH_DATA) {
+                    ctx.drawImage(webcam.video, 0, 0, webcam.canvas.width, webcam.canvas.height);
+                }
+                await predict();
+            }
+            window.requestAnimationFrame(loop); 
+        }
+
+        async function predict() {
+            if (!model || !webcam.canvas) return;
+
+            const prediction = await model.predict(webcam.canvas);
+            let apakahAdaGulma = false; 
+            
+            for (let i = 0; i < maxPredictions; i++) {
+                // Mencari kelas bernama "hama" atau "gulma" dengan akurasi di atas 75%
+                if (prediction[i].className.toLowerCase().includes("hama") && prediction[i].probability > 0.75) {
+                    apakahAdaGulma = true;
+                    break; 
+                }
+            }
+            
+            const statusLabel = document.getElementById("status-label");
+            const statusPanel = document.getElementById("status-panel");
+
+            if (apakahAdaGulma) {
+                // AKSI SAAT GULMA TERDETEKSI
+                if (statusPompaSaatIni === "MATI") {
+                    statusPompaSaatIni = "NYALA";
+                    waktuMulaiSemprot = performance.now(); // Catat waktu awal (milidetik)
+                    
+                    fetch(`http://${IP_WEMOS}/pompa-nyala`).catch(e => console.log("Gagal kirim ON:", e));
+                }
+                
+                statusLabel.innerText = "🚨 GULMA TERDETEKSI! MENYEMPROT...";
+                statusLabel.className = "text-lg font-extrabold text-red-500 tracking-wide";
+                statusPanel.classList.add("warning-bg");
+                
+            } else {
+                // AKSI SAAT TANAMAN AMAN
+                if (statusPompaSaatIni === "NYALA") {
+                    statusPompaSaatIni = "MATI";
+                    
+                    // Hitung durasi presisi
+                    let waktuMatiSemprot = performance.now();
+                    let durasiDetik = (waktuMatiSemprot - waktuMulaiSemprot) / 1000;
+                    
+                    // Hitung konversi debit cairan sesi semprot ini
+                    let cairanSesiIni = durasiDetik * DEBIT_PER_DETIK;
+                    totalPestisidaKeluar += cairanSesiIni; // Tambahkan ke total akumulasi
+                    
+                    // UPDATE MONITOR PEMBACA AI secara Real-Time
+                    document.getElementById("monitor-durasi").innerHTML = `${durasiDetik.toFixed(2)} <span class="text-xs font-normal text-slate-400">detik</span>`;
+                    document.getElementById("monitor-sesi").innerHTML = `${cairanSesiIni.toFixed(1)} <span class="text-xs font-normal text-slate-400">mL</span>`;
+                    document.getElementById("monitor-total").innerHTML = `${totalPestisidaKeluar.toFixed(0)} <span class="text-sm font-bold text-slate-300">mL</span>`;
+                    
+                    fetch(`http://${IP_WEMOS}/pompa-mati`).catch(e => console.log("Gagal kirim OFF:", e));
+                }
+                
+                statusLabel.innerText = "🟢 TANAMAN AMAN";
+                statusLabel.className = "text-lg font-extrabold text-emerald-400 tracking-wide";
+                statusPanel.classList.remove("warning-bg");
+            }
+        }
+    </script>
+</body>
+</html>
